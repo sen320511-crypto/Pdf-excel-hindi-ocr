@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF to Excel Hindi OCR</title>
+<style>
+:root{font-family:system-ui,-apple-system,"Noto Sans Devanagari",Arial,sans-serif;color:#182230;background:#f4f7fb}
+*{box-sizing:border-box}body{margin:0;padding:18px}
+main{max-width:760px;margin:0 auto;background:#fff;border:1px solid #e1e7ef;border-radius:18px;padding:22px;box-shadow:0 8px 30px #172b4d0b}
+h1{font-size:1.6rem;margin:0 0 8px}p{line-height:1.55}.muted{color:#5d6b7a;font-size:.93rem}
+label{display:block;font-weight:650;margin:16px 0 7px}
+input[type=file],select,button{width:100%;font:inherit}
+input[type=file],select{border:1px solid #cbd5e1;border-radius:10px;padding:12px;background:white}
+.check{display:flex;align-items:flex-start;gap:10px;font-weight:500}.check input{margin-top:5px;transform:scale(1.15)}
+button{border:0;border-radius:11px;padding:13px 16px;background:#175cd3;color:white;font-weight:700;cursor:pointer;margin-top:18px}
+button:disabled{opacity:.55;cursor:wait}.secondary{background:#eaf1ff;color:#174ea6}
+#status{margin-top:16px;white-space:pre-wrap;overflow-wrap:anywhere;background:#f7f9fc;padding:12px;border-radius:10px;min-height:44px}
+progress{width:100%;height:14px;margin-top:12px}
+.notice{border-left:4px solid #f0ad4e;background:#fff8e8;padding:12px;border-radius:8px;font-size:.92rem}
+.privacy{border-left-color:#16a34a;background:#f0fdf4}
+small{color:#64748b}
+</style>
+</head>
+<body>
+<main>
+  <h1>📄 PDF to Excel — Hindi OCR</h1>
+  <p class="muted">Android मोबाइल के Chrome ब्राउज़र में उपयोग करें। PDF से टेक्स्ट/टेबल निकालकर Excel (.xlsx) डाउनलोड करें।</p>
+  <div class="notice privacy"><b>Privacy:</b> आपकी PDF इसी ब्राउज़र में प्रोसेस होती है; फ़ाइल किसी अपने सर्वर पर अपलोड नहीं होती। OCR भाषा डेटा पहली बार इंटरनेट से डाउनलोड हो सकता है।</div>
+
+  <label for="pdf">PDF फाइल चुनें</label>
+  <input id="pdf" type="file" accept="application/pdf,.pdf">
+
+  <label class="check"><input id="ocr" type="checkbox" checked><span>जहाँ PDF में टेक्स्ट नहीं मिलता, वहाँ स्कैन पेज पर OCR चलाएँ</span></label>
+
+  <label for="lang">OCR भाषा</label>
+  <select id="lang">
+    <option value="hin+eng" selected>हिंदी + English</option>
+    <option value="hin">केवल हिंदी</option>
+    <option value="eng">केवल English</option>
+  </select>
+
+  <label for="mode">Excel शीट विकल्प</label>
+  <select id="mode">
+    <option value="separate" selected>हर PDF पेज की अलग शीट</option>
+    <option value="single">सभी पेज एक शीट में</option>
+  </select>
+
+  <button id="convert">Excel में बदलें</button>
+  <progress id="progress" value="0" max="100" hidden></progress>
+  <div id="status" role="status">पहले PDF फाइल चुनें।</div>
+  <a id="download" hidden style="display:block;margin-top:14px;text-align:center;text-decoration:none">
+    <button type="button">⬇️ Excel फाइल डाउनलोड करें</button>
+  </a>
+  <p><small>बेहतर परिणाम के लिए साफ़, सीधी और अच्छी गुणवत्ता वाली PDF इस्तेमाल करें। बड़ी PDF को प्रोसेस होने में समय लग सकता है।</small></p>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+</script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+const fileInput = document.getElementById('pdf');
+const convertBtn = document.getElementById('convert');
+const statusEl = document.getElementById('status');
+const progressEl = document.getElementById('progress');
+const downloadEl = document.getElementById('download');
+const ocrBox = document.getElementById('ocr');
+const langSelect = document.getElementById('lang');
+const modeSelect = document.getElementById('mode');
+
+function status(s){statusEl.textContent=s;}
+function safeName(s){return s.replace(/[\\/:*?"<>|]+/g,'_').replace(/\.pdf$/i,'') || 'converted';}
+function groupPdfText(items){
+  // Group PDF.js positioned text spans into approximate rows, then split into cells using horizontal gaps.
+  const words = items.filter(x => x.str && x.str.trim()).map(x => ({
+    text:x.str.trim(), x:x.transform ? x.transform[4] : 0,
+    y:x.transform ? x.transform[5] : 0,
+    width:x.width || 0
+  })).sort((a,b)=>Math.abs(b.y-a.y)>3 ? b.y-a.y : a.x-b.x);
+  const lines=[];
+  for(const w of words){
+    let line=lines.find(l=>Math.abs(l.y-w.y)<=3);
+    if(!line){line={y:w.y,words:[]};lines.push(line);}
+    line.words.push(w);
+  }
+  lines.sort((a,b)=>b.y-a.y);
+  return lines.map(line=>{
+    line.words.sort((a,b)=>a.x-b.x);
+    const cells=[]; let current='', prevEnd=null;
+    for(const w of line.words){
+      const gap=prevEnd===null?0:w.x-prevEnd;
+      if(current && gap>24){cells.push(current.trim());current=w.text;}
+      else current+=(current?' ':'')+w.text;
+      prevEnd=w.x+w.width;
+    }
+    if(current.trim())cells.push(current.trim());
+    return cells.length ? cells : [''];
+  }).filter(r=>r.some(c=>c.trim()));
+}
+async function pageToCanvas(page, scale=1.8){
+  const viewport=page.getViewport({scale});
+  const canvas=document.createElement('canvas');
+  canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+  const ctx=canvas.getContext('2d',{willReadFrequently:false});
+  await page.render({canvasContext:ctx,viewport}).promise;
+  return canvas;
+}
+async function ocrPage(page, worker){
+  const canvas=await pageToCanvas(page,2);
+  const result=await worker.recognize(canvas);
+  canvas.width=1;canvas.height=1;
+  const lines=(result.data.text||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  return lines.map(line=>[line]);
+}
+function normalizeRows(rows){
+  const width=Math.max(1,...rows.map(r=>r.length));
+  return rows.map(r=>r.concat(Array(Math.max(0,width-r.length)).fill('')));
+}
+convertBtn.addEventListener('click', async()=>{
+  const file=fileInput.files && fileInput.files[0];
+  if(!file){status('कृपया पहले PDF फाइल चुनें।');return;}
+  convertBtn.disabled=true;downloadEl.hidden=true;progressEl.hidden=false;progressEl.value=0;
+  let worker=null;
+  try{
+    status('PDF खोल रहे हैं…');
+    const bytes=await file.arrayBuffer();
+    const pdf=await pdfjsLib.getDocument({data:bytes}).promise;
+    const pageRows=[];
+    if(ocrBox.checked){
+      status('Hindi OCR तैयार हो रहा है। पहली बार भाषा डेटा डाउनलोड होने में समय लग सकता है…');
+      worker=await Tesseract.createWorker(langSelect.value, 1, {
+        logger:m=>{
+          if(m.status==='recognizing text') status(`OCR चल रहा है… ${Math.round((m.progress||0)*100)}%`);
+        }
+      });
+    }
+    for(let i=1;i<=pdf.numPages;i++){
+      status(`पेज ${i}/${pdf.numPages} पढ़ रहे हैं…`);
+      const page=await pdf.getPage(i);
+      let rows=groupPdfText((await page.getTextContent()).items);
+      const hasText=rows.some(r=>r.join(' ').trim().length>0);
+      if(!hasText && worker){
+        rows=await ocrPage(page,worker);
+      } else if(!hasText){
+        rows=[['इस पेज से टेक्स्ट नहीं मिला। OCR विकल्प चालू करें।']];
+      }
+      rows=normalizeRows(rows);
+      pageRows.push({name:`Page_${i}`,rows});
+      progressEl.value=Math.round(i/pdf.numPages*85);
+    }
+    if(worker){await worker.terminate();worker=null;}
+    status('Excel फाइल तैयार कर रहे हैं…');
+    const wb=XLSX.utils.book_new();
+    if(modeSelect.value==='separate'){
+      pageRows.forEach(p=>{
+        const ws=XLSX.utils.aoa_to_sheet(p.rows);
+        ws['!cols']=Array(Math.max(1,...p.rows.map(r=>r.length))).fill({wch:22});
+        XLSX.utils.book_append_sheet(wb,ws,p.name.slice(0,31));
+      });
+    } else {
+      const combined=[];
+      pageRows.forEach((p,idx)=>{
+        combined.push([`PDF Page ${idx+1}`]);
+        combined.push(...p.rows);
+        combined.push([]);
+      });
+      XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(combined),'All Pages');
+    }
+    const out=XLSX.write(wb,{bookType:'xlsx',type:'array'});
+    const blob=new Blob([out],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const url=URL.createObjectURL(blob);
+    downloadEl.href=url;
+    downloadEl.download=safeName(file.name)+'_converted.xlsx';
+    downloadEl.hidden=false;
+    progressEl.value=100;
+    status(`कन्वर्जन पूरा हुआ। कुल पेज: ${pdf.numPages}\nअब “Excel फाइल डाउनलोड करें” दबाएँ।\nनोट: OCR टेक्स्ट निकालता है; स्कैन टेबल के कॉलम कभी-कभी हाथ से ठीक करने पड़ सकते हैं।`);
+  }catch(err){
+    console.error(err);
+    status('कन्वर्जन असफल हुआ: '+(err && err.message ? err.message : String(err))+
+      '\nइंटरनेट कनेक्शन जाँचें। Hindi OCR के लिए भाषा डेटा डाउनलोड होना जरूरी है।');
+  }finally{
+    if(worker){try{await worker.terminate();}catch(e){}}
+    convertBtn.disabled=false;
+  }
+});
+</script>
+</body>
+</html>
